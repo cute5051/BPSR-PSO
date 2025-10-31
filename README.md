@@ -56,6 +56,9 @@ https://github.com/cute5051/BPSR-PSO/releases
 Main window\
 ![main.png](resources/main.png)
 
+Monster list\
+![monster-lists.png](resources/monster-lists.png)
+
 Settings in Main window\
 ![settings.png](resources/settings.png)
 
