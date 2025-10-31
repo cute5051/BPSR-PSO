@@ -9,10 +9,9 @@ import userDataManager from '../services/UserDataManager.js';
  * @param {object} userDataManager The data manager instance for user data.
  * @param {object} logger The Winston logger instance.
  * @param {boolean} isPaused The state of the statistics being paused.
- * @param {string} SETTINGS_PATH The path to the settings file.
  * @returns {express.Router} An Express Router with all routes defined.
  */
-export function createApiRouter(isPaused, SETTINGS_PATH) {
+export function createApiRouter(isPaused) {
     const router = express.Router();
 
     // Middleware to parse JSON requests
@@ -24,6 +23,30 @@ export function createApiRouter(isPaused, SETTINGS_PATH) {
         const data = {
             code: 0,
             user: userData,
+            currentTargetUid: userDataManager.currentTargetUid,
+        };
+        res.json(data);
+    });
+
+    // GET all user data by targetUid
+    router.get('/data/:uid', (req, res) => {
+        const uid = req.params.uid;
+        logger.info(`request /data/${uid}`);
+        const userData = userDataManager.getAllUsersDataByUid(uid);
+        const data = {
+            code: 0,
+            user: userData,
+            currentTargetUid: userDataManager.currentTargetUid,
+        };
+        res.json(data);
+    });
+
+    // GET all targets data
+    router.get('/targets', (req, res) => {
+        const targetsData = userDataManager.getAllTargets();
+        const data = {
+            code: 0,
+            targets: targetsData,
         };
         res.json(data);
     });
@@ -38,40 +61,12 @@ export function createApiRouter(isPaused, SETTINGS_PATH) {
         res.json(data);
     });
 
-    // Clear all statistics
-    router.get('/clear', (req, res) => {
-        userDataManager.clearAll();
-        logger.info('Statistics have been cleared!');
-        res.json({
-            code: 0,
-            msg: 'Statistics have been cleared!',
-        });
-    });
-
-    // Pause/Resume statistics
-    router.post('/pause', (req, res) => {
-        const { paused } = req.body;
-        isPaused = paused;
-        logger.info(`Statistics ${isPaused ? 'paused' : 'resumed'}!`);
-        res.json({
-            code: 0,
-            msg: `Statistics ${isPaused ? 'paused' : 'resumed'}!`,
-            paused: isPaused,
-        });
-    });
-
-    // Get pause state
-    router.get('/pause', (req, res) => {
-        res.json({
-            code: 0,
-            paused: isPaused,
-        });
-    });
-
     // Get skill data for a specific user ID
-    router.get('/skill/:uid', (req, res) => {
+    router.get('/skill/:targetUid/:uid', (req, res) => {
         const uid = parseInt(req.params.uid);
-        const skillData = userDataManager.getUserSkillData(uid);
+        const targetUid = req.params.targetUid;
+        logger.info(`request /skill/${targetUid}/${uid}`);
+        const skillData = userDataManager.getUserSkillData(uid, targetUid);
 
         if (!skillData) {
             return res.status(404).json({
@@ -84,6 +79,50 @@ export function createApiRouter(isPaused, SETTINGS_PATH) {
             code: 0,
             data: skillData,
         });
+    });
+
+    // Get skill data for a specific user ID
+    router.get('/v2/skill/:targetUid/:uid', (req, res) => {
+        const uid = parseInt(req.params.uid);
+        const targetUid = req.params.targetUid;
+        logger.info(`request /v2/skill/${targetUid}/${uid}`);
+        const skillData = userDataManager.getUserSkillDataV2(uid, targetUid);
+        if (!skillData) {
+            return res.status(404).json({
+                code: 1,
+                msg: 'User not found',
+            });
+        }
+
+        res.json({
+            code: 0,
+            data: skillData,
+        });
+    });
+
+    // GET all user buffs
+    router.get('/buffs/:uid', (req, res) => {
+        const uid = parseInt(req.params.uid);
+        const startFightTime = req.query.fightStartTime;
+        const lastUpdateTime = req.query.lastUpdateTime;
+        // logger.info(`request buffs/${uid}`);
+        const buffsData = userDataManager.getBuffsInfoByTime(uid, startFightTime, lastUpdateTime);
+        const data = {
+            code: 0,
+            buffs: buffsData,
+        };
+        res.json(data);
+    });
+
+    router.get('/allbuffs/:uid', (req, res) => {
+        const uid = parseInt(req.params.uid);
+        logger.info(`request buffs/${uid}`);
+        const buffsData = userDataManager.getBuffsInfo(uid);
+        const data = {
+            code: 0,
+            buffs: buffsData,
+        };
+        res.json(data);
     });
 
     // Get history summary for a specific timestamp
@@ -207,17 +246,48 @@ export function createApiRouter(isPaused, SETTINGS_PATH) {
         }
     });
 
+    // Clear all statistics
+    router.get('/clear', (req, res) => {
+        userDataManager.clearAll();
+        logger.info('Statistics have been cleared!');
+        res.json({
+            code: 0,
+            msg: 'Statistics have been cleared!',
+        });
+    });
+
+    // Pause/Resume statistics
+    router.post('/pause', (req, res) => {
+        const { paused } = req.body;
+        isPaused = paused;
+        logger.info(`Statistics ${isPaused ? 'paused' : 'resumed'}!`);
+        res.json({
+            code: 0,
+            msg: `Statistics ${isPaused ? 'paused' : 'resumed'}!`,
+            paused: isPaused,
+        });
+    });
+
+    // Get pause state
+    router.get('/pause', (req, res) => {
+        res.json({
+            code: 0,
+            paused: isPaused,
+        });
+    });
+
     // Get current settings
     router.get('/settings', (req, res) => {
-        res.json({ code: 0, data: globalSettings });
+        const config = userDataManager.getConfig();
+        res.json({ code: 0, data: config.GLOBAL_SETTINGS });
     });
 
     // Update settings
     router.post('/settings', async (req, res) => {
         const newSettings = req.body;
-        globalSettings = { ...globalSettings, ...newSettings };
-        await fsPromises.writeFile(SETTINGS_PATH, JSON.stringify(globalSettings, null, 2), 'utf8');
-        res.json({ code: 0, data: globalSettings });
+        const config = userDataManager.getConfig();
+        config.GLOBAL_SETTINGS = newSettings;
+        res.json({ code: 0, data: config });
     });
 
     return router;

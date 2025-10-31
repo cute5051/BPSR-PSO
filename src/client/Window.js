@@ -1,7 +1,14 @@
+<<<<<<< HEAD
 import { BrowserWindow } from 'electron';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
+=======
+import { BrowserWindow, ipcMain } from 'electron';
+import { fileURLToPath } from 'url';
+import path from 'path';
+import configManager from './ConfigManager.js';
+>>>>>>> fe2b914 (big changes)
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -9,7 +16,10 @@ const __dirname = path.dirname(__filename);
 const iconPath = path.join(__dirname, '../resources/app.ico');
 const preloadPath = path.join(__dirname, '../preload.js');
 const htmlPath = path.join(__dirname, '../public/index.html');
+<<<<<<< HEAD
 const configPath = path.join(__dirname, '../../windowConfig.json');
+=======
+>>>>>>> fe2b914 (big changes)
 
 /**
  * A manager class to handle the application's main window,
@@ -25,6 +35,7 @@ class Window {
         y: undefined,
         passthrough: false,
         lastHeight: 300, // Default restore height for minimize feature
+<<<<<<< HEAD
     };
 
     constructor() {
@@ -46,6 +57,28 @@ class Window {
             console.error('Failed to read window config, using defaults.', error);
         }
         return this.defaultConfig;
+=======
+        opacity: 0.05,
+    };
+
+    constructor() {
+        this.config = configManager.getMainWindowConfig();
+        this._setupIpcHandlers();
+    }
+
+    _setupIpcHandlers() {
+        ipcMain.handle('set-main-opacity', (event, opacity) => {
+            const success = configManager.setMainWindowOpacity(opacity);
+            return { success };
+        });
+        ipcMain.handle('set-skill-window-opacity', (event, opacity) => {
+            const success = configManager.setSkillWindowsOpacity(opacity);
+            if (success && this.skillWindowsManager) {
+                this.skillWindowsManager.broadcastOpacity(opacity);
+            }
+            return { success };
+        });
+>>>>>>> fe2b914 (big changes)
     }
 
     /**
@@ -54,6 +87,7 @@ class Window {
      */
     _saveConfig() {
         if (!this._window) return;
+<<<<<<< HEAD
         try {
             const bounds = this._window.getBounds();
             const configData = {
@@ -68,6 +102,12 @@ class Window {
         } catch (error) {
             console.error('Failed to save window config.', error);
         }
+=======
+        
+        const bounds = this._window.getBounds();
+        configManager.setMainWindowPosition(bounds.x, bounds.y);
+        configManager.setMainWindowSize(bounds.width, bounds.height);
+>>>>>>> fe2b914 (big changes)
     }
 
     /**
@@ -101,6 +141,11 @@ class Window {
         this._window.on('close', () => this._saveConfig());
         this._window.on('closed', () => (this._window = null));
         this._window.webContents.on('did-finish-load', () => {
+<<<<<<< HEAD
+=======
+            this._window.webContents.send('main-opacity', this.config.opacity);
+            this._window.webContents.send('skill-window-opacity', this.getSkillWindowOpacity());
+>>>>>>> fe2b914 (big changes)
             if (this.config.passthrough) {
                 this.setPassthrough(true);
             }
@@ -109,6 +154,17 @@ class Window {
         return this._window;
     }
 
+<<<<<<< HEAD
+=======
+    setSkillWindowsManager(manager) {
+        this.skillWindowsManager = manager;
+    }
+
+    getSkillWindowOpacity() {
+        return configManager.getSkillWindowsConfig().opacity;
+    }
+
+>>>>>>> fe2b914 (big changes)
     /**
      * Retrieves the active BrowserWindow instance.
      * @returns {BrowserWindow} The active window instance.

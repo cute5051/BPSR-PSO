@@ -1,7 +1,12 @@
 import { StatisticData } from './StatisticData.js';
-import skill_names from '../tables/skill_names.json' with { type: 'json' };
+import skill_names from '../tables/skill_names_en_upd.json' with { type: 'json' };
+import damageAttrs from '../tables/DamageAttrTable.json' with { type: 'json' };
+import recount_table from '../tables/RecountTable.json' with { type: 'json' };
+import logger from '../services/Logger.js';
 
-const skillConfig = skill_names.skill_names;
+const skillConfig = skill_names;
+const dmgConfig = damageAttrs;
+const recountConfig = recount_table;
 
 function getSubProfessionBySkillId(skillId) {
     switch (skillId) {
@@ -61,11 +66,12 @@ export class UserData {
     constructor(uid) {
         this.uid = uid;
         this.name = '';
-        this.damageStats = new StatisticData(this, '伤害');
-        this.healingStats = new StatisticData(this, '治疗');
+        this.damageStats = new StatisticData('Dmg');
+        this.healingStats = new StatisticData('Heal');
         this.takenDamage = 0; // 承伤
         this.deadCount = 0; // 死亡次数
         this.profession = '...';
+        this.professionId = 0;
         this.skillUsage = new Map(); // 技能使用情况
         this.fightPoint = 0; // 总评分
         this.subProfession = '';
@@ -86,12 +92,12 @@ export class UserData {
      * @param {boolean} [isCauseLucky] - 是否造成幸运
      * @param {number} hpLessenValue - 生命值减少量
      */
-    addDamage(skillId, element, damage, isCrit, isLucky, isCauseLucky, hpLessenValue = 0) {
+    addDamage(skillId, element, damage, isCrit, isLucky, isCauseLucky, hpLessenValue = 0, startTime) {
         this._touch();
-        this.damageStats.addRecord(damage, isCrit, isLucky, hpLessenValue);
+        this.damageStats.addRecord(damage, isCrit, isLucky, hpLessenValue, startTime);
         // 记录技能使用情况
         if (!this.skillUsage.has(skillId)) {
-            this.skillUsage.set(skillId, new StatisticData(this, '伤害', element));
+            this.skillUsage.set(skillId, new StatisticData('Dmg', element));
         }
         this.skillUsage.get(skillId).addRecord(damage, isCrit, isCauseLucky, hpLessenValue);
         this.skillUsage.get(skillId).realtimeWindow.length = 0;
@@ -100,6 +106,7 @@ export class UserData {
         if (subProfession) {
             this.setSubProfession(subProfession);
         }
+        // logger.info(this.skillUsage);
     }
 
     /** 添加治疗记录
@@ -116,7 +123,7 @@ export class UserData {
         // 记录技能使用情况
         skillId = skillId + 1000000000;
         if (!this.skillUsage.has(skillId)) {
-            this.skillUsage.set(skillId, new StatisticData(this, '治疗', element));
+            this.skillUsage.set(skillId, new StatisticData('Heal', element));
         }
         this.skillUsage.get(skillId).addRecord(healing, isCrit, isCauseLucky);
         this.skillUsage.get(skillId).realtimeWindow.length = 0;
@@ -179,6 +186,7 @@ export class UserData {
             total_healing: { ...this.healingStats.stats },
             taken_damage: this.takenDamage,
             profession: this.profession + (this.subProfession ? ` ${this.subProfession}` : ''),
+            professionId: this.professionId,
             name: this.name,
             fightPoint: this.fightPoint,
             hp: this.attr.hp,
@@ -191,16 +199,17 @@ export class UserData {
     getSkillSummary() {
         const skills = {};
         for (const [skillId, stat] of this.skillUsage) {
-            const total = stat.stats.normal + stat.stats.critical + stat.stats.lucky + stat.stats.crit_lucky;
             const critCount = stat.count.critical;
             const luckyCount = stat.count.lucky;
             const critRate = stat.count.total > 0 ? critCount / stat.count.total : 0;
             const luckyRate = stat.count.total > 0 ? luckyCount / stat.count.total : 0;
-            const name = skillConfig[skillId % 1000000000] ?? skillId % 1000000000;
+            const name = skillConfig[skillId % 1000000000]?.name ?? skillId % 1000000000;
+            const icon = skillConfig[skillId % 1000000000]?.icon ?? skillId % 1000000000;
             const elementype = stat.element;
 
             skills[skillId] = {
                 displayName: name,
+                displayIcon: icon,
                 type: stat.type,
                 elementype: elementype,
                 totalDamage: stat.stats.total,
@@ -216,6 +225,106 @@ export class UserData {
         return skills;
     }
 
+    getSkillSummaryV2() {
+        const temp = structuredClone(this.skillUsage);
+        const result = {};
+        for (const [recountId, recountData] of Object.entries(recountConfig)) {
+            const damageBreakdown = {};
+            let firstIcon;
+            for (const damageId of recountData.DamageId) {
+                const damageAttr = dmgConfig[damageId];
+
+                if (damageAttr && damageAttr.TypeEnum) {
+                    const typeEnum = damageAttr.TypeEnum;
+
+                    if (temp.has(typeEnum)) {
+                        const stat = temp.get(typeEnum);
+                        const critCount = stat.count.critical;
+                        const luckyCount = stat.count.lucky;
+                        const critRate = stat.count.total > 0 ? critCount / stat.count.total : 0;
+                        const luckyRate = stat.count.total > 0 ? luckyCount / stat.count.total : 0;
+                        const name = skillConfig[typeEnum % 1000000000]?.name ?? typeEnum % 1000000000;
+                        const icon = skillConfig[typeEnum % 1000000000]?.icon;
+                        if (icon && !firstIcon) firstIcon = icon;
+                        const elementype = stat.element;
+
+                        damageBreakdown[typeEnum] = {
+                            displayName: name,
+                            displayIcon: icon,
+                            type: stat.type,
+                            elementype: elementype,
+                            totalDamage: stat.stats.total,
+                            totalCount: stat.count.total,
+                            critCount: stat.count.critical,
+                            luckyCount: stat.count.lucky,
+                            critRate: critRate,
+                            luckyRate: luckyRate,
+                            damageBreakdown: { ...stat.stats },
+                            countBreakdown: { ...stat.count },
+                        };
+                        temp.delete(typeEnum);
+                    }
+                }
+            }
+
+            if (Object.keys(damageBreakdown).length > 0) {
+                const icon = skillConfig[recountId % 1000000000]?.icon ?? firstIcon;
+                result[recountId] = {
+                    groupedSkills: damageBreakdown,
+                    name: recountData.RecountName,
+                    displayIcon: icon,
+                };
+            }
+        }
+        for (const [skillId, stat] of temp) {
+            const skills = {};
+            const critCount = stat.count.critical;
+            const luckyCount = stat.count.lucky;
+            const critRate = stat.count.total > 0 ? critCount / stat.count.total : 0;
+            const luckyRate = stat.count.total > 0 ? luckyCount / stat.count.total : 0;
+            const name = skillConfig[skillId % 1000000000]?.name ?? skillId % 1000000000;
+            const icon = skillConfig[skillId % 1000000000]?.icon ?? '';
+            const elementype = stat.element;
+
+            skills[skillId] = {
+                displayName: name,
+                displayIcon: icon,
+                type: stat.type,
+                elementype: elementype,
+                totalDamage: stat.stats.total,
+                totalCount: stat.count.total,
+                critCount: stat.count.critical,
+                luckyCount: stat.count.lucky,
+                critRate: critRate,
+                luckyRate: luckyRate,
+                damageBreakdown: { ...stat.stats },
+                countBreakdown: { ...stat.count },
+            };
+            result[skillId] = {
+                groupedSkills: skills,
+                name: name,
+                displayIcon: icon,
+            };
+        }
+
+        // for (const [typeEnum, skillData] of this.skillUsage.entries()) {
+        //     let flag = false;
+        //     for (const [recountId, damageBreakdown] of Object.entries(result)) {
+        //         for (const id of Object.keys(result[recountId].groupedSkills)) {
+        //             if (typeEnum === id) {
+        //                 flag = true;
+        //             }
+        //         }
+        //     }
+        //     if (!flag) {
+        //         logger.info(`!pipyao! ${typeEnum}`);
+        //         logger.info(skillData);
+        //     }
+        // }
+
+        return result;
+    }
+
     /** 设置职业
      * @param {string} profession - 职业名称
      * */
@@ -225,6 +334,14 @@ export class UserData {
             this.setSubProfession('');
         }
         this.profession = profession;
+    }
+
+    /**
+     * @param {int} professionId - class id
+     * */
+    setProfessionId(professionId) {
+        this._touch();
+        this.professionId = professionId;
     }
 
     /** 设置子职业

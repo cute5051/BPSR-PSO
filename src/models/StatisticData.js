@@ -1,11 +1,16 @@
 export class StatisticData {
-    constructor(user, type, element) {
-        this.user = user;
+    constructor(type, element) {
         this.type = type || '';
         this.element = element || '';
         this.stats = {
             normal: 0,
+            normalMin: 0,
+            normalAvg: 0,
+            normalMax: 0,
             critical: 0,
+            criticalMin: 0,
+            criticalAvg: 0,
+            criticalMax: 0,
             lucky: 0,
             crit_lucky: 0,
             hpLessen: 0,
@@ -31,19 +36,23 @@ export class StatisticData {
      * @param {boolean} isLucky - 是否为幸运
      * @param {number} hpLessenValue - 生命值减少量（仅伤害使用）
      */
-    addRecord(value, isCrit, isLucky, hpLessenValue = 0) {
+    addRecord(value, isCrit, isLucky, hpLessenValue = 0, startTime) {
         const now = Date.now();
 
         if (isCrit) {
             if (isLucky) {
                 this.stats.crit_lucky += value;
+                this.stats.criticalMin = this.stats.criticalMin === 0 ? value : Math.min(this.stats.criticalMin, value);
+                this.stats.criticalMax = Math.max(this.stats.criticalMax, value);
             } else {
                 this.stats.critical += value;
+                this.stats.criticalMin = this.stats.criticalMin === 0 ? value : Math.min(this.stats.criticalMin, value);
+                this.stats.criticalMax = Math.max(this.stats.criticalMax, value);
             }
-        } else if (isLucky) {
-            this.stats.lucky += value;
         } else {
             this.stats.normal += value;
+            this.stats.normalMin = this.stats.normalMin === 0 ? value : Math.min(this.stats.normalMin, value);
+            this.stats.normalMax = Math.max(this.stats.normalMax, value);
         }
         this.stats.total += value;
         this.stats.hpLessen += hpLessenValue;
@@ -53,11 +62,18 @@ export class StatisticData {
         }
         if (isLucky) {
             this.count.lucky++;
+            if (!isCrit) {
+                this.count.normal++;
+            }
         }
         if (!isCrit && !isLucky) {
             this.count.normal++;
         }
         this.count.total++;
+
+        this.stats.criticalAvg =
+            this.count.critical > 0 ? (this.stats.critical + this.stats.crit_lucky) / this.count.critical : 0;
+        this.stats.normalAvg = this.count.normal > 0 ? this.stats.normal / this.count.normal : 0;
 
         this.realtimeWindow.push({
             time: now,
@@ -67,7 +83,7 @@ export class StatisticData {
         if (this.timeRange[0]) {
             this.timeRange[1] = now;
         } else {
-            this.timeRange[0] = now;
+            this.timeRange[0] = startTime;
         }
     }
 

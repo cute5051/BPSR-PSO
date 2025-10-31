@@ -9,8 +9,8 @@ const MOVE_INCREMENT = 20;
  */
 export function registerShortcuts() {
     registerPassthrough();
-    registerResize();
-    registerMove();
+    // registerResize();
+    // registerMove();
     registerMinimize();
 }
 

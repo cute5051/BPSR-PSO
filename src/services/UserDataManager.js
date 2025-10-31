@@ -1,4 +1,6 @@
 import { UserData } from '../models/UserData.js';
+import monsterNames from '../tables/monster_names_en_upd.json' with { type: 'json' };
+import buff_table from '../tables/buff_table.json' with { type: 'json' };
 import { Lock } from '../models/Lock.js';
 import { config } from '../config.js';
 import socket from './Socket.js';
@@ -8,14 +10,21 @@ import path from 'path';
 
 class UserDataManager {
     constructor(logger) {
+        this.currentPlayerUid = null;
+
         this.users = new Map();
+        this.usersBuffs = new Map();
         this.userCache = new Map();
         this.cacheFilePath = './users.json';
+        this.targetFights = new Map();
+        this.targetFightsHistory = new Map();
+        this.cacheMonstrFilePath = './monstr.json';
 
         this.saveThrottleDelay = 2000;
         this.saveThrottleTimer = null;
         this.pendingSave = false;
 
+        this.currentTargetUid = null;
         this.hpCache = new Map();
         this.startTime = Date.now();
 
@@ -26,6 +35,7 @@ class UserDataManager {
             name: new Map(),
             hp: new Map(),
             maxHp: new Map(),
+            attrToUid: new Map(),
         };
 
         // 自动保存
@@ -37,10 +47,27 @@ class UserDataManager {
             this.saveAllUserData();
         }, 10 * 1000);
 
-        // New: Interval to clean up inactive users every 30 seconds
-        setInterval(() => {
-            this.cleanUpInactiveUsers();
-        }, 30 * 1000);
+        // New: Interval to clean up inactive fights exclude curTarget every 30 seconds
+        // setInterval(() => {
+        //     this.cleanUpInactiveTargetFights();
+        // }, 30 * 1000);
+    }
+
+    cleanUpInactiveTargetFights() {
+        const inactiveThreshold = 60 * 1000; // 1 минута
+        const currentTime = Date.now();
+
+        for (const [targetUid, targetFight] of this.targetFights.entries()) {
+            if (this.currentTargetUid !== targetUid) {
+                if (currentTime - targetFight.lastUpdateTime > inactiveThreshold) {
+                    for (const [uid, user] of targetFight.users.entries()) {
+                        targetFight.users.delete(uid);
+                    }
+                    this.targetFights.delete(targetUid);
+                }
+                logger.info(`Removed inactive fight with targetUid ${targetUid}`);
+            }
+        }
     }
 
     // New: Method to remove users who have not been updated in 60 seconds
@@ -60,6 +87,30 @@ class UserDataManager {
 
     async init() {
         await this.loadUserCache();
+    }
+
+    async loadMonstrCache() {
+        try {
+            await fsPromises.access(this.cacheMonstrFilePath);
+            const data = await fsPromises.readFile(this.cacheMonstrFilePath, 'utf8');
+            const cacheData = JSON.parse(data);
+            this.enemyCache.name = new Map(Object.entries(cacheData));
+            logger.info(`Loaded ${this.enemyCache.name.size} monster cache entries`);
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                logger.error('Failed to load monster cache:', error);
+            }
+        }
+    }
+
+    async saveMonstrCache() {
+        try {
+            const cacheData = Object.fromEntries(this.enemyCache.name);
+            await fsPromises.writeFile(this.cacheMonstrFilePath, JSON.stringify(cacheData, null, 2), 'utf8');
+            logger.info(`Saved ${this.enemyCache.name.size} monster cache entries`);
+        } catch (error) {
+            logger.error('Failed to save user cache:', error);
+        }
     }
 
     async loadUserCache() {
@@ -122,6 +173,9 @@ class UserDataManager {
                 if (cachedData.profession) {
                     user.setProfession(cachedData.profession);
                 }
+                if (cachedData.professionId) {
+                    user.setProfessionId(cachedData.professionId);
+                }
                 if (cachedData.fightPoint !== undefined && cachedData.fightPoint !== null) {
                     user.setFightPoint(cachedData.fightPoint);
                 }
@@ -137,28 +191,222 @@ class UserDataManager {
         return this.users.get(uid);
     }
 
+    getTargetFight(targetUid) {
+        if (!this.targetFights.has(targetUid)) {
+            this.targetFights.set(targetUid, {
+                startTime: Date.now(),
+                lastUpdateTime: Date.now(),
+                users: new Map(),
+            });
+            logger.info(`Started new fight with target ${targetUid} with startTime: ${Date.now()}`);
+        }
+        return this.targetFights.get(targetUid);
+    }
+
+    getUserBattleData(targetUid, userUid) {
+        const targetFight = this.getTargetFight(targetUid);
+        if (!targetFight.users.has(userUid)) {
+            const userData = new UserData(userUid);
+
+            const mainUser = this.users.get(userUid);
+            if (mainUser) {
+                userData.name = mainUser.name;
+                userData.profession = mainUser.profession;
+                userData.professionId = mainUser.professionId;
+                userData.fightPoint = mainUser.fightPoint;
+                userData.attr = { ...mainUser.attr };
+            }
+
+            targetFight.users.set(userUid, userData);
+        }
+        return targetFight.users.get(userUid);
+    }
+
     addDamage(uid, skillId, element, damage, isCrit, isLucky, isCauseLucky, hpLessenValue = 0, targetUid) {
         if (config.IS_PAUSED) return;
-        if (config.GLOBAL_SETTINGS.onlyRecordEliteDummy && targetUid !== 75) return;
         this.checkTimeoutClear();
-        const user = this.getUser(uid);
-        user.addDamage(skillId, element, damage, isCrit, isLucky, isCauseLucky, hpLessenValue);
+        if (uid === this.currentPlayerUid) {
+            this.setCurrentTargetUid(targetUid);
+        }
+        const targetFight = this.getTargetFight(targetUid);
+        targetFight.lastUpdateTime = Date.now();
+        const user = this.getUserBattleData(targetUid, uid);
+        user.addDamage(skillId, element, damage, isCrit, isLucky, isCauseLucky, hpLessenValue, targetFight.startTime);
     }
 
     addHealing(uid, skillId, element, healing, isCrit, isLucky, isCauseLucky, targetUid) {
         if (config.IS_PAUSED) return;
         this.checkTimeoutClear();
         if (uid !== 0) {
-            const user = this.getUser(uid);
-            user.addHealing(skillId, element, healing, isCrit, isLucky, isCauseLucky);
+            for (const targetFight of this.targetFights.values()) {
+                if (targetFight.users.has(uid) && targetFight.users.has(targetUid)) {
+                    for (const userData of targetFight.users.values()) {
+                        if (userData.uid === uid) {
+                            userData.addHealing(skillId, element, healing, isCrit, isLucky, isCauseLucky);
+                        }
+                    }
+                }
+            }
         }
     }
 
-    addTakenDamage(uid, damage, isDead) {
+    addTakenDamage(uid, damage, isDead, attackerUid) {
         if (config.IS_PAUSED) return;
         this.checkTimeoutClear();
-        const user = this.getUser(uid);
+        const user = this.getUserBattleData(attackerUid, uid);
         user.addTakenDamage(damage, isDead);
+    }
+
+    addBuff(targetUid, buffUuid, tableUuid, durationBuff, createTime) {
+        let endTime = undefined;
+        if (durationBuff) {
+            endTime = createTime + durationBuff;
+        }
+        if (!this.usersBuffs.has(targetUid)) {
+            const mapBuff = new Map();
+            mapBuff.set(buffUuid, {
+                tableUuid: tableUuid,
+                createTime: createTime,
+                endTime: endTime,
+            });
+            this.usersBuffs.set(targetUid, mapBuff);
+            return;
+        }
+        const mapBuff = this.usersBuffs.get(targetUid);
+        if (!mapBuff.has(buffUuid)) {
+            mapBuff.set(buffUuid, {
+                tableUuid: tableUuid,
+                createTime: createTime,
+                endTime: endTime,
+            });
+            return;
+        } else {
+            const buff = mapBuff.get(buffUuid);
+            buff.endTime = endTime;
+        }
+    }
+
+    closeBuff(targetUid, buffUuid, now) {
+        if (this.usersBuffs.has(targetUid)) {
+            const mapBuff = this.usersBuffs.get(targetUid);
+            if (mapBuff.has(buffUuid)) {
+                const buff = mapBuff.get(buffUuid);
+                if (!buff.endTime) {
+                    mapBuff.set(buffUuid, {
+                        ...buff,
+                        endTime: now,
+                    });
+                }
+                if (buff.endTime > now) {
+                    buff.endTime = now;
+                }
+            }
+        }
+    }
+
+    getBuffsInfo(targetUid) {
+        const tgtUserBuffs = this.usersBuffs.get(targetUid);
+        const buffs = {};
+        for (const [uid, buffsInfo] of tgtUserBuffs.entries()) {
+            const buffTable = buff_table[buffsInfo.tableUuid];
+            buffs[uid] = {
+                buffName: buffTable.Name,
+                buffDesc: buffTable.Desc,
+                tableUuid: buffsInfo.tableUuid,
+                createTime: buffsInfo.createTime,
+                endTime: buffsInfo.endTime,
+            };
+        }
+        return buffs;
+    }
+
+    getBuffsInfoByTime(targetUid, startFightTime, lastUpdateTime) {
+        const tgtUserBuffs = this.usersBuffs.get(targetUid);
+        if (!tgtUserBuffs) return {};
+
+        const buffs = {};
+        const fightDuration = lastUpdateTime - startFightTime;
+
+        const buffsByTableUuid = {};
+
+        for (const [uid, buffsInfo] of tgtUserBuffs.entries()) {
+            const tableUuid = buffsInfo.tableUuid;
+            if (buffsInfo.createTime > lastUpdateTime || buffsInfo.endTime < startFightTime) {
+                continue;
+            }
+            if (!buffsByTableUuid[tableUuid]) {
+                buffsByTableUuid[tableUuid] = {
+                    buffInfo: null,
+                    intervals: [],
+                };
+            }
+
+            if (!buffsByTableUuid[tableUuid].buffInfo) {
+                const buffTable = buff_table[tableUuid];
+                buffsByTableUuid[tableUuid].buffInfo = {
+                    buffName: buffTable?.Name || `Buff ${tableUuid}`,
+                    buffDesc: buffTable?.Desc || '',
+                    tableUuid: tableUuid,
+                };
+            }
+
+            buffsByTableUuid[tableUuid].intervals.push({
+                createTime: buffsInfo.createTime,
+                endTime: buffsInfo.endTime,
+            });
+        }
+
+        for (const [tableUuid, data] of Object.entries(buffsByTableUuid)) {
+            const intervals = data.intervals;
+            let totalUptime = 0;
+
+            intervals.sort((a, b) => a.createTime - b.createTime);
+
+            const mergedIntervals = [];
+            let currentInterval = null;
+
+            for (const interval of intervals) {
+                if (!currentInterval) {
+                    currentInterval = { ...interval };
+                    continue;
+                }
+
+                if (interval.createTime <= currentInterval.endTime) {
+                    currentInterval.endTime = Math.max(currentInterval.endTime, interval.endTime);
+                } else {
+                    mergedIntervals.push(currentInterval);
+                    currentInterval = { ...interval };
+                }
+            }
+
+            if (currentInterval) {
+                mergedIntervals.push(currentInterval);
+            }
+
+            for (const interval of mergedIntervals) {
+                const buffStartInFight = Math.max(interval.createTime, startFightTime);
+                const buffEndInFight = Math.min(interval.endTime, lastUpdateTime);
+
+                const durationInFight = Math.max(0, buffEndInFight - buffStartInFight);
+
+                if (durationInFight > 0) {
+                    totalUptime += durationInFight;
+                }
+            }
+            if (totalUptime <= 0) {
+                continue;
+            }
+            const uptimePercentage = fightDuration > 0 ? (totalUptime / fightDuration) * 100 : 0;
+
+            buffs[tableUuid] = {
+                ...data.buffInfo,
+                uptime: uptimePercentage,
+                totalUptime: totalUptime,
+                fightDuration: fightDuration,
+            };
+        }
+
+        return buffs;
     }
 
     async addLog(log) {
@@ -188,15 +436,27 @@ class UserDataManager {
         this.logLock.release();
     }
 
-    setProfession(uid, profession) {
+    setCurrentTargetUid(bossUid) {
+        this.currentTargetUid = bossUid;
+    }
+
+    setCurrentPlayerUid(uid) {
+        if (uid && this.currentPlayerUid !== uid) {
+            logger.info('Set currentPlayerUid = ' + uid);
+            this.currentPlayerUid = uid;
+        }
+    }
+    setProfession(uid, profession, professionId) {
         const user = this.getUser(uid);
         if (user.profession !== profession) {
             user.setProfession(profession);
-            logger.info(`Found profession ${profession} for uid ${uid}`);
+            user.setProfessionId(professionId);
+            logger.info(`Found profession ${profession} id ${professionId} for uid ${uid}`);
             const uidStr = String(uid);
             if (!this.userCache.has(uidStr)) {
                 this.userCache.set(uidStr, {});
             }
+            this.userCache.get(uidStr).professionId = professionId;
             this.userCache.get(uidStr).profession = profession;
             this.saveUserCacheThrottled();
         }
@@ -247,29 +507,216 @@ class UserDataManager {
     }
 
     updateAllRealtimeDps() {
-        for (const user of this.users.values()) {
-            user.updateRealtimeDps();
+        for (const targetFight of this.targetFights.values()) {
+            for (const userData of targetFight.users.values()) {
+                userData.updateRealtimeDps();
+            }
         }
     }
 
-    getUserSkillData(uid) {
-        const user = this.users.get(uid);
-        if (!user) return null;
+    getUserSkillData(uid, targetUid) {
+        if (!targetUid) return {};
+        let updUid = targetUid;
+        let index;
+        if (targetUid.includes('_')) {
+            const i = targetUid.indexOf('_');
+            updUid = targetUid.substring(0, i);
+            index = parseInt(targetUid.substring(i + 1));
+        }
+        updUid = parseInt(updUid);
+        let targetFight = this.targetFights.get(updUid);
+        if (!isNaN(index)) {
+            targetFight = this.targetFightsHistory.get(updUid)[index];
+        }
+        if (!targetFight || !targetFight.users.has(uid)) return {};
+
+        const userBattleData = targetFight.users.get(uid);
+        const mainUser = this.users.get(uid);
+        const startTime = targetFight.startTime;
+        const lastUpdateTime = targetFight.lastUpdateTime;
+
         return {
-            uid: user.uid,
-            name: user.name,
-            profession: user.profession + (user.subProfession ? `-${user.subProfession}` : ''),
-            skills: user.getSkillSummary(),
-            attr: user.attr,
+            uid: userBattleData.uid,
+            name: mainUser?.name || userBattleData.name,
+            profession: mainUser?.profession || userBattleData.profession,
+            professionId: mainUser?.professionId || userBattleData.professionId,
+            skills: userBattleData.getSkillSummary(),
+            attr: mainUser?.attr || userBattleData.attr,
+            fightPoint: mainUser?.fightPoint || userBattleData.fightPoint,
+            fightStartTime: startTime,
+            lastUpdateTime: lastUpdateTime,
+        };
+    }
+
+    getUserSkillDataV2(uid, targetUid) {
+        if (!targetUid) return {};
+        let updUid = targetUid;
+        let index;
+        if (targetUid.includes('_')) {
+            const i = targetUid.indexOf('_');
+            updUid = targetUid.substring(0, i);
+            index = parseInt(targetUid.substring(i + 1));
+        }
+        updUid = parseInt(updUid);
+        let targetFight = this.targetFights.get(updUid);
+        if (!isNaN(index)) {
+            targetFight = this.targetFightsHistory.get(updUid)[index];
+        }
+        if (!targetFight || !targetFight.users.has(uid)) return {};
+
+        const userBattleData = targetFight.users.get(uid);
+        const mainUser = this.users.get(uid);
+        const startTime = targetFight.startTime;
+        const lastUpdateTime = targetFight.lastUpdateTime;
+
+        return {
+            uid: userBattleData.uid,
+            name: mainUser?.name || userBattleData.name,
+            profession: mainUser?.profession || userBattleData.profession,
+            professionId: mainUser?.professionId || userBattleData.professionId,
+            skills: userBattleData.getSkillSummaryV2(),
+            attr: mainUser?.attr || userBattleData.attr,
+            fightPoint: mainUser?.fightPoint || userBattleData.fightPoint,
+            fightStartTime: startTime,
+            lastUpdateTime: lastUpdateTime,
         };
     }
 
     getAllUsersData() {
+        let currentTargetUid = this.currentTargetUid;
+        if (
+            !currentTargetUid ||
+            !(this.targetFights.has(currentTargetUid) || this.targetFightsHistory.has(currentTargetUid)) ||
+            (config.GLOBAL_SETTINGS.onlyRecordBoss &&
+                monsterNames[this.enemyCache.attrToUid.get(currentTargetUid)]?.MonsterType !== 2)
+        ) {
+            return {};
+        }
+        const historyFightArr = this.targetFightsHistory.get(currentTargetUid);
+        const length = historyFightArr?.length === 0 ? 1 : historyFightArr?.length;
+        const currentTargetName =
+            this.enemyCache.name.get(currentTargetUid) ||
+            monsterNames[this.enemyCache.attrToUid.get(currentTargetUid)]?.Name ||
+            currentTargetUid;
+        let currentTargetFight = this.targetFights.get(currentTargetUid);
+        if (!currentTargetFight && !isNaN(length)) {
+            currentTargetFight = historyFightArr[length - 1];
+            currentTargetUid = `${currentTargetUid}_${length - 1}`;
+        }
         const result = {};
-        for (const [uid, user] of this.users.entries()) {
-            result[uid] = user.getSummary();
+
+        for (const [userUid, userBattleData] of currentTargetFight.users.entries()) {
+            const mainUser = this.users.get(userUid);
+            if (mainUser) {
+                userBattleData.name = mainUser.name;
+                userBattleData.profession = mainUser.profession;
+                userBattleData.professionId = mainUser.professionId;
+                userBattleData.fightPoint = mainUser.fightPoint;
+                userBattleData.attr = { ...mainUser.attr };
+            }
+            const summary = userBattleData.getSummary();
+            result[userUid] = {
+                ...summary,
+                lastUpdateTime: currentTargetFight.lastUpdateTime,
+                startTime: currentTargetFight.startTime,
+                targetName: currentTargetName,
+                targetUid: currentTargetUid,
+            };
         }
         return result;
+    }
+
+    getAllUsersDataByUid(uid) {
+        let updUid = uid;
+        let index;
+        if (uid.includes('_')) {
+            const i = uid.indexOf('_');
+            updUid = uid.substring(0, i);
+            index = parseInt(uid.substring(i + 1));
+        }
+        updUid = parseInt(updUid);
+        if (!(this.targetFights.has(updUid) || this.targetFightsHistory.has(updUid))) {
+            return {};
+        }
+
+        const currentTargetName =
+            this.enemyCache.name.get(updUid) || monsterNames[this.enemyCache.attrToUid.get(updUid)]?.Name || updUid;
+        let currentTargetFight = this.targetFights.get(updUid);
+        if (!isNaN(index)) {
+            currentTargetFight = this.targetFightsHistory.get(updUid)[index];
+            updUid = `${updUid}_${index}`;
+        }
+        const result = {};
+
+        for (const [userUid, userBattleData] of currentTargetFight.users.entries()) {
+            const mainUser = this.users.get(userUid);
+            if (mainUser) {
+                userBattleData.name = mainUser.name;
+                userBattleData.profession = mainUser.profession;
+                userBattleData.professionId = mainUser.professionId;
+                userBattleData.fightPoint = mainUser.fightPoint;
+                userBattleData.attr = { ...mainUser.attr };
+            }
+            const summary = userBattleData.getSummary();
+            result[userUid] = {
+                ...summary,
+                lastUpdateTime: currentTargetFight.lastUpdateTime,
+                startTime: currentTargetFight.startTime,
+                targetName: currentTargetName,
+                targetUid: updUid,
+            };
+        }
+        return result;
+    }
+
+    getAllTargets() {
+        const allTargets = [];
+        for (const [targetUid, fightsArray] of this.targetFightsHistory.entries()) {
+            if (
+                config.GLOBAL_SETTINGS.onlyRecordBoss &&
+                monsterNames[this.enemyCache.attrToUid.get(targetUid)]?.MonsterType !== 2
+            )
+                continue;
+            for (let i = 0; i < fightsArray.length; i++) {
+                const targetFight = fightsArray[i];
+
+                if (targetFight.users.has(this.currentPlayerUid)) {
+                    const targetName =
+                        this.enemyCache.name.get(targetUid) ||
+                        monsterNames[this.enemyCache.attrToUid.get(targetUid)]?.Name ||
+                        targetUid;
+                    allTargets.push({
+                        targetUid: `${targetUid}_${i}`,
+                        targetName: targetName,
+                        lastUpdateTime: targetFight.lastUpdateTime,
+                        startTime: targetFight.startTime,
+                    });
+                }
+            }
+        }
+
+        for (const [targetUid, targetFight] of this.targetFights.entries()) {
+            if (
+                config.GLOBAL_SETTINGS.onlyRecordBoss &&
+                monsterNames[this.enemyCache.attrToUid.get(targetUid)]?.MonsterType !== 2
+            )
+                continue;
+            if (targetFight.users.has(this.currentPlayerUid)) {
+                const targetName =
+                    this.enemyCache.name.get(targetUid) ||
+                    monsterNames[this.enemyCache.attrToUid.get(targetUid)]?.Name ||
+                    targetUid;
+                allTargets.push({
+                    targetUid: targetUid,
+                    targetName: targetName,
+                    lastUpdateTime: targetFight.lastUpdateTime,
+                    startTime: targetFight.startTime,
+                });
+            }
+        }
+
+        allTargets.sort((a, b) => b.lastUpdateTime - a.lastUpdateTime);
+        return allTargets;
     }
 
     getAllEnemiesData() {
@@ -289,6 +736,22 @@ class UserDataManager {
         return result;
     }
 
+    refreshTargetFight(targetUid) {
+        const targetFight = this.targetFights.get(targetUid);
+        if (targetFight) {
+            const users = targetFight.users;
+            if (users && users.has(this.currentPlayerUid)) {
+                logger.info(`Move info about fight with ${targetUid} in history`);
+                if (!this.targetFightsHistory.has(targetUid)) {
+                    this.targetFightsHistory.set(targetUid, []);
+                }
+                const fightsArray = this.targetFightsHistory.get(targetUid);
+                fightsArray.push(targetFight);
+            }
+            this.targetFights.delete(targetUid);
+        }
+    }
+
     deleteEnemyData(id) {
         this.enemyCache.name.delete(id);
         this.enemyCache.hp.delete(id);
@@ -304,6 +767,8 @@ class UserDataManager {
     clearAll() {
         const usersToSave = this.users;
         const saveStartTime = this.startTime;
+        this.targetFights = new Map();
+        this.targetFightsHistory = new Map();
         this.users = new Map();
         this.startTime = Date.now();
         this.lastAutoSaveTime = 0;
@@ -338,6 +803,7 @@ class UserDataManager {
                     uid: user.uid,
                     name: user.name,
                     profession: user.profession + (user.subProfession ? `-${user.subProfession}` : ''),
+                    professionId: user.professionId,
                     skills: user.getSkillSummary(),
                     attr: user.attr,
                 };
@@ -373,8 +839,8 @@ class UserDataManager {
         }
     }
 
-    getGlobalSettings() {
-        return config.GLOBAL_SETTINGS;
+    getConfig() {
+        return config;
     }
 }
 
