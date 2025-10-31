@@ -54,6 +54,6 @@ jobs:
                       Релиз ${{ github.ref_name }}
                       Собрано: ${{ github.event.head_commit.timestamp }}
                   files: |
-                      artifacts/*
+                      artifacts/**/*
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
