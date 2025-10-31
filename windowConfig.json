@@ -1,0 +1,14 @@
+{
+    "mainWindow": {
+        "width": 400,
+        "height": 295,
+        "x": 38,
+        "y": 228,
+        "passthrough": false,
+        "lastHeight": 300,
+        "opacity": 0.45
+    },
+    "skillWindows": {
+        "opacity": 0.75
+    }
+}

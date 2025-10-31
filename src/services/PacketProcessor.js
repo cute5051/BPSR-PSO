@@ -4,7 +4,7 @@ import pbjs from 'protobufjs/minimal.js';
 import fs from 'fs';
 import logger from './Logger.js';
 import { createRequire } from 'module';
-import monsterNames from '../tables/monster_names.json' with { type: 'json' };
+import monsterNames from '../tables/monster_names_en_upd.json' with { type: 'json' };
 import { BinaryReader } from '../models/BinaryReader.js';
 import userDataManager from './UserDataManager.js';
 
@@ -34,6 +34,7 @@ const AttrType = {
     AttrName: 0x01,
     AttrId: 0x0a,
     AttrProfessionId: 0xdc,
+    AttrDeadTime: 0xce,
     AttrFightPoint: 0x272e,
     AttrLevel: 0x2710,
     AttrRankLevel: 0x274c,
@@ -115,27 +116,27 @@ const getProfessionNameFromId = (professionId) => {
 const getDamageElement = (damageProperty) => {
     switch (damageProperty) {
         case EDamageProperty.General:
-            return '⚔️物';
+            return 'General'; //⚔️物
         case EDamageProperty.Fire:
-            return '🔥火';
+            return 'Fire'; //🔥火
         case EDamageProperty.Water:
-            return '❄️冰';
+            return 'Water'; //❄️冰
         case EDamageProperty.Electricity:
-            return '⚡雷';
+            return 'Electricity'; //⚡雷
         case EDamageProperty.Wood:
-            return '🍀森';
+            return 'Wood'; //🍀森
         case EDamageProperty.Wind:
-            return '💨风';
+            return 'Wind'; //💨风
         case EDamageProperty.Rock:
-            return '⛰️岩';
+            return 'Rock'; //⛰️岩
         case EDamageProperty.Light:
-            return '🌟光';
+            return 'Light'; //🌟光
         case EDamageProperty.Dark:
-            return '🌑暗';
+            return 'Dark'; //🌑暗
         case EDamageProperty.Count:
             return '❓？'; // 未知
         default:
-            return '⚔️物';
+            return 'General'; //⚔️物
     }
 };
 
@@ -220,17 +221,54 @@ export class PacketProcessor {
         if (!targetUuid) {
             return;
         }
-
         const isTargetPlayer = isUuidPlayer(targetUuid);
         const isTargetMonster = isUuidMonster(targetUuid);
-        targetUuid = targetUuid.shiftRight(16);
+        let targetUid = targetUuid.shiftRight(16);
 
         const attrCollection = aoiSyncDelta.Attrs;
         if (attrCollection && attrCollection.Attrs) {
             if (isTargetPlayer) {
-                this._processPlayerAttrs(targetUuid.toNumber(), attrCollection.Attrs);
+                this._processPlayerAttrs(targetUid.toNumber(), attrCollection.Attrs);
             } else if (isTargetMonster) {
-                this._processEnemyAttrs(targetUuid.toNumber(), attrCollection.Attrs);
+                this._processEnemyAttrs(targetUid.toNumber(), attrCollection.Attrs, targetUuid.toNumber());
+            }
+        }
+
+        //buffs
+        const buffInfos = aoiSyncDelta.BuffInfos;
+        // const tempTable = new Map();
+        if (buffInfos) {
+            for (const syncBuffInfo of buffInfos.BuffInfos) {
+                const durationBuff = syncBuffInfo.Duration;
+                const tableUuid = syncBuffInfo.TableUuid;
+                const buffUuid = syncBuffInfo.BuffUuid;
+                const createTime = syncBuffInfo.CreateTime.toNumber();
+                if (!durationBuff) {
+                    // logger.info(syncBuffInfo);
+                    continue;
+                }
+                // tempTable.set(buffUuid, syncBuffInfo);
+                userDataManager.addBuff(targetUid.toNumber(), buffUuid, tableUuid, durationBuff, createTime);
+            }
+        }
+        const buffEffect = aoiSyncDelta.BuffEffect;
+        if (buffEffect) {
+            for (const syncBuffEffect of buffEffect.BuffEffects) {
+                const now = Date.now();
+                const typeBuffEffect = syncBuffEffect.Type;
+                const buffUuid = syncBuffEffect.BuffUuid;
+                // if (targetUid.toNumber() === 35842554) {
+                //     const tempBuff = tempTable.get(buffUuid);
+                //     if (tempBuff && tempBuff.TableUuid === 683115) {
+                //         logger.info(`type: ${typeBuffEffect}`);
+                //         logger.info(tempBuff);
+                //         logger.info(syncBuffEffect);
+                //     }
+                // }
+                if (typeBuffEffect === 2) {
+                    userDataManager.closeBuff(targetUid.toNumber(), buffUuid, now);
+                } else if (typeBuffEffect !== 1) {
+                }
             }
         }
 
@@ -238,7 +276,9 @@ export class PacketProcessor {
         if (!skillEffect || !skillEffect.Damages) {
             return;
         }
-
+        // if (skillEffect) {
+        //     logger.info(skillEffect);
+        // }
         for (const syncDamageInfo of skillEffect.Damages) {
             const skillId = syncDamageInfo.OwnerId;
             if (!skillId) {
@@ -253,6 +293,10 @@ export class PacketProcessor {
             const isAttackerPlayer = isUuidPlayer(attackerUuid);
             attackerUuid = attackerUuid.shiftRight(16);
 
+            // if (attackerUuid.toNumber() === 35842554) {
+            //     logger.info(syncDamageInfo);
+            //     logger.info(skillEffect);
+            // }
             const value = syncDamageInfo.Value;
             const luckyValue = syncDamageInfo.LuckyValue;
             const damage = value ?? luckyValue ?? Long.ZERO;
@@ -279,13 +323,13 @@ export class PacketProcessor {
                         isCrit,
                         isLucky,
                         isCauseLucky,
-                        targetUuid.toNumber()
+                        targetUid.toNumber()
                     );
                 } else {
-                    userDataManager.addTakenDamage(targetUuid.toNumber(), damage.toNumber(), isDead);
+                    // userDataManager.addTakenDamage(targetUid.toNumber(), damage.toNumber(), isDead, attackerUuid.toNumber());
                 }
                 if (isDead) {
-                    userDataManager.setAttrKV(targetUuid.toNumber(), 'hp', 0);
+                    userDataManager.setAttrKV(targetUid.toNumber(), 'hp', 0);
                 }
             } else {
                 if (!isHeal && isAttackerPlayer) {
@@ -298,11 +342,11 @@ export class PacketProcessor {
                         isLucky,
                         isCauseLucky,
                         hpLessenValue.toNumber(),
-                        targetUuid.toNumber()
+                        targetUid.toNumber()
                     );
                 }
                 if (isDead) {
-                    userDataManager.deleteEnemyData(targetUuid.toNumber());
+                    userDataManager.refreshTargetFight(targetUid.toNumber());
                 }
             }
 
@@ -338,22 +382,22 @@ export class PacketProcessor {
 
             let targetName = '';
             if (isTargetPlayer) {
-                const target = userDataManager.getUser(targetUuid.toNumber());
+                const target = userDataManager.getUser(targetUid.toNumber());
                 if (target.name) {
                     targetName += target.name;
                 }
-                targetName += `#${targetUuid.toString()}(player)`;
+                targetName += `#${targetUid.toString()}(player)`;
             } else {
-                if (userDataManager.enemyCache.name.has(targetUuid.toNumber())) {
-                    targetName += userDataManager.enemyCache.name.get(targetUuid.toNumber());
+                if (userDataManager.enemyCache.name.has(targetUid.toNumber())) {
+                    targetName += userDataManager.enemyCache.name.get(targetUid.toNumber());
                 }
-                targetName += `#${targetUuid.toString()}(enemy)`;
+                targetName += `#${targetUid.toString()}(enemy)`;
             }
 
             infoStr += ` TGT: ${targetName}`;
             const dmgLog = `[${actionType}] DS: ${getDamageSource(damageSource)} ${infoStr} ID: ${skillId} VAL: ${damage} HPLSN: ${hpLessenValue} ELEM: ${damageElement.slice(-1)} EXT: ${extra.join('|')}`;
             //logger.info(dmgLog);
-            userDataManager.addLog(dmgLog);
+            // userDataManager.addLog(dmgLog);
         }
     }
 
@@ -373,6 +417,7 @@ export class PacketProcessor {
         const uuid = aoiSyncToMeDelta.Uuid;
         if (uuid && !currentUserUuid.eq(uuid)) {
             currentUserUuid = uuid;
+            userDataManager.setCurrentPlayerUid(currentUserUuid.shiftRight(16).toNumber());
             logger.info('Got player UUID! UUID: ' + currentUserUuid + ' UID: ' + currentUserUuid.shiftRight(16));
         }
         const aoiSyncDelta = aoiSyncToMeDelta.BaseDelta;
@@ -418,7 +463,11 @@ export class PacketProcessor {
             }
             const professionList = vData.ProfessionList;
             if (professionList.CurProfessionId) {
-                userDataManager.setProfession(playerUid, getProfessionNameFromId(professionList.CurProfessionId));
+                userDataManager.setProfession(
+                    playerUid,
+                    getProfessionNameFromId(professionList.CurProfessionId),
+                    professionList.CurProfessionId
+                );
             }
         } catch (err) {
             fs.writeFileSync('./SyncContainerData.dat', payloadBuffer);
@@ -509,7 +558,8 @@ export class PacketProcessor {
                     if (curProfessionId) {
                         userDataManager.setProfession(
                             currentUserUuid.shiftRight(16).toNumber(),
-                            getProfessionNameFromId(curProfessionId)
+                            getProfessionNameFromId(curProfessionId),
+                            curProfessionId
                         );
                     }
                 }
@@ -529,7 +579,8 @@ export class PacketProcessor {
                     break;
                 }
                 case AttrType.AttrProfessionId: {
-                    userDataManager.setProfession(playerUid, getProfessionNameFromId(reader.int32()));
+                    const idProf = reader.int32();
+                    userDataManager.setProfession(playerUid, getProfessionNameFromId(idProf), idProf);
                     break;
                 }
                 case AttrType.AttrFightPoint: {
@@ -576,7 +627,7 @@ export class PacketProcessor {
         }
     }
 
-    _processEnemyAttrs(enemyUid, attrs) {
+    _processEnemyAttrs(enemyUid, attrs, enemyUuid) {
         for (const attr of attrs) {
             if (!attr.Id || !attr.RawData) {
                 continue;
@@ -591,15 +642,28 @@ export class PacketProcessor {
                 }
                 case AttrType.AttrId: {
                     const attrId = reader.int32();
-                    const name = monsterNames[attrId];
+                    userDataManager.enemyCache.attrToUid.set(enemyUid, attrId);
+                    const name = monsterNames[attrId].Name;
                     if (name) {
-                        logger.info(`Found monster name ${name} for id ${enemyUid}`);
+                        logger.info(
+                            `Found monster name ${name} for uuid ${enemyUuid} for uid ${enemyUid} by attrId ${attrId}`
+                        );
                         userDataManager.enemyCache.name.set(enemyUid, name);
                     }
                     break;
                 }
                 case AttrType.AttrHp: {
-                    userDataManager.enemyCache.hp.set(enemyUid, reader.int32());
+                    const hp = reader.int32();
+                    if (
+                        userDataManager.enemyCache.hp.get(enemyUid) &&
+                        userDataManager.enemyCache.hp.get(enemyUid) < hp
+                    ) {
+                        logger.info(
+                            `UID ${enemyUid} HP: ${userDataManager.enemyCache.hp.get(enemyUid)} < ${userDataManager.enemyCache.maxHp.get(enemyUid)}`
+                        );
+                        userDataManager.refreshTargetFight(enemyUid);
+                    }
+                    userDataManager.enemyCache.hp.set(enemyUid, hp);
                     break;
                 }
                 case AttrType.AttrMaxHp: {
@@ -625,7 +689,7 @@ export class PacketProcessor {
             if (attrCollection && attrCollection.Attrs) {
                 switch (entity.EntType) {
                     case pb.EEntityType.EntMonster: {
-                        this._processEnemyAttrs(entityUid, attrCollection.Attrs);
+                        this._processEnemyAttrs(entityUid, attrCollection.Attrs, entityUuid);
                         break;
                     }
                     case pb.EEntityType.EntChar: {
@@ -722,6 +786,13 @@ export class PacketProcessor {
                         break;
                     }
                     default: {
+                        // let testPacket = packetReader.readRemaining();
+                        // logger.info(testPacket);
+                        // if (isZstdCompressed) {
+                        //     testPacket = this._decompressPayload(testPacket);
+                        // }
+                        // const testBuff = pb.BuffEffectSync.decode(testPacket);
+                        // logger.info(testBuff);
                         // Silently ignore unknown packet types
                         break;
                     }

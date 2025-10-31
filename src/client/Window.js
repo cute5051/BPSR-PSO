@@ -1,7 +1,7 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, ipcMain } from 'electron';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import fs from 'fs';
+import configManager from './ConfigManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -9,7 +9,6 @@ const __dirname = path.dirname(__filename);
 const iconPath = path.join(__dirname, '../resources/app.ico');
 const preloadPath = path.join(__dirname, '../preload.js');
 const htmlPath = path.join(__dirname, '../public/index.html');
-const configPath = path.join(__dirname, '../../windowConfig.json');
 
 /**
  * A manager class to handle the application's main window,
@@ -25,27 +24,26 @@ class Window {
         y: undefined,
         passthrough: false,
         lastHeight: 300, // Default restore height for minimize feature
+        opacity: 0.05,
     };
 
     constructor() {
-        this.config = this._loadConfig();
+        this.config = configManager.getMainWindowConfig();
+        this._setupIpcHandlers();
     }
 
-    /**
-     * Loads window configuration from the JSON file.
-     * @private
-     */
-    _loadConfig() {
-        try {
-            if (fs.existsSync(configPath)) {
-                const rawData = fs.readFileSync(configPath, 'utf8');
-                const loadedConfig = JSON.parse(rawData);
-                return { ...this.defaultConfig, ...loadedConfig };
+    _setupIpcHandlers() {
+        ipcMain.handle('set-main-opacity', (event, opacity) => {
+            const success = configManager.setMainWindowOpacity(opacity);
+            return { success };
+        });
+        ipcMain.handle('set-skill-window-opacity', (event, opacity) => {
+            const success = configManager.setSkillWindowsOpacity(opacity);
+            if (success && this.skillWindowsManager) {
+                this.skillWindowsManager.broadcastOpacity(opacity);
             }
-        } catch (error) {
-            console.error('Failed to read window config, using defaults.', error);
-        }
-        return this.defaultConfig;
+            return { success };
+        });
     }
 
     /**
@@ -54,20 +52,10 @@ class Window {
      */
     _saveConfig() {
         if (!this._window) return;
-        try {
-            const bounds = this._window.getBounds();
-            const configData = {
-                width: bounds.width,
-                height: bounds.height,
-                x: bounds.x,
-                y: bounds.y,
-                passthrough: this.config.passthrough,
-                lastHeight: this.config.lastHeight,
-            };
-            fs.writeFileSync(configPath, JSON.stringify(configData, null, 4));
-        } catch (error) {
-            console.error('Failed to save window config.', error);
-        }
+
+        const bounds = this._window.getBounds();
+        configManager.setMainWindowPosition(bounds.x, bounds.y);
+        configManager.setMainWindowSize(bounds.width, bounds.height);
     }
 
     /**
@@ -101,12 +89,22 @@ class Window {
         this._window.on('close', () => this._saveConfig());
         this._window.on('closed', () => (this._window = null));
         this._window.webContents.on('did-finish-load', () => {
+            this._window.webContents.send('main-opacity', this.config.opacity);
+            this._window.webContents.send('skill-window-opacity', this.getSkillWindowOpacity());
             if (this.config.passthrough) {
                 this.setPassthrough(true);
             }
         });
 
         return this._window;
+    }
+
+    setSkillWindowsManager(manager) {
+        this.skillWindowsManager = manager;
+    }
+
+    getSkillWindowOpacity() {
+        return configManager.getSkillWindowsConfig().opacity;
     }
 
     /**
