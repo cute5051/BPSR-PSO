@@ -53,11 +53,11 @@ https://github.com/cute5051/BPSR-PSO/releases
 
 ## Image
 
-Main window
+Main window\
 ![main.png](resources/main.png)
 
-Settings in Main window
+Settings in Main window\
 ![settings.png](resources/settings.png)
 
-Skill details window
+Skill details window\
 ![skills-details.png](resources/skills-details.png)
